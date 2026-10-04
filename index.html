@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Job Agent</title>
+<style>
+  :root{--bg:#f4f6f8;--card:#fff;--text:#1a1a1a;--muted:#5b6470;--line:#d5dae2;--brand:#1a237e;--ok:#2e7d32;--warn:#7a5b00;--warnbg:#fff3cd;--bad:#c62828;--chip:#e3e7ee}
+  @media (prefers-color-scheme:dark){:root{--bg:#10131a;--card:#1a1f2a;--text:#e8ebf2;--muted:#9aa4b5;--line:#2c3444;--brand:#7986cb;--ok:#66bb6a;--warn:#ffd54f;--warnbg:#3a3000;--bad:#ef5350;--chip:#262d3b}}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
+  header{background:var(--brand);color:#fff;padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  @media (prefers-color-scheme:dark){header{color:#10131a}}
+  header h1{font-size:17px;margin:0;flex:1}
+  header button{background:rgba(255,255,255,.2);color:inherit;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}
+  main{max-width:900px;margin:0 auto;padding:0 16px 48px}
+  nav{display:flex;gap:6px;flex-wrap:wrap;padding:12px 0}
+  nav button{border:0;border-radius:16px;padding:6px 12px;background:var(--chip);color:var(--text);cursor:pointer;font-size:13px}
+  nav button.on{background:var(--brand);color:#fff}
+  @media (prefers-color-scheme:dark){nav button.on{color:#10131a}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:10px 0}
+  .meta{font-size:13px;color:var(--muted);margin-bottom:6px;overflow-wrap:anywhere}
+  .tag{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;margin-left:4px}
+  .tag.warn{background:var(--warnbg);color:var(--warn)} .tag.ok{background:var(--chip);color:var(--ok)}
+  input,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;margin:3px 0 8px}
+  textarea{min-height:200px}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:600;font-size:14px;background:var(--chip);color:var(--text)}
+  .btn.approve{background:var(--ok);color:#fff} .btn.skip{background:var(--muted);color:#fff}
+  .login{max-width:360px;margin:12vh auto;padding:0 16px}
+  .note{font-size:13px;color:var(--muted);margin:6px 0 0}
+  .err{color:var(--bad);font-size:14px;min-height:20px}
+  table{width:100%;border-collapse:collapse;font-size:14px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  .score{font-weight:700} a{color:var(--brand)}
+  @media (prefers-color-scheme:dark){a{color:#9fa8da}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// Public by design: the publishable key only works together with your login + row-level security.
+const SUPABASE_URL = "https://xllafcnijtpoaifytwxa.supabase.co";
+const SUPABASE_KEY = "sb_publishable_vig-hcndK9BIJE9hUudfpw_pGGJdLLh";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = (h) => { const d = document.createElement("div"); d.innerHTML = h; return d.firstElementChild; };
+const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const app = document.getElementById("app");
+let view = "outreach", tab = "pending", items = [], roles = [], minScore = 6;
+const TABS = ["pending","approved","sent","replied","autoreply","bounced","skipped"];
+
+async function boot() {
+  const { data } = await sb.auth.getSession();
+  data.session ? await load() : loginScreen();
+}
+
+function loginScreen(msg = "") {
+  app.innerHTML = `<div class="login"><h2>Job Agent</h2>
+    <input id="em" type="email" placeholder="Email" autocomplete="username">
+    <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
+    <div class="err" id="err">${esc(msg)}</div>
+    <button class="btn approve" id="go">Sign in</button></div>`;
+  const go = async () => {
+    const { error } = await sb.auth.signInWithPassword({ email: document.getElementById("em").value.trim(),
+                                                         password: document.getElementById("pw").value });
+    error ? loginScreen("Sign-in failed.") : load();
+  };
+  document.getElementById("go").onclick = go;
+  document.getElementById("pw").onkeydown = (e) => e.key === "Enter" && go();
+}
+
+async function load() {
+  const [i, r] = await Promise.all([
+    sb.from("outreach_items").select("*").order("updated_at", { ascending: false }),
+    sb.from("roles").select("data"),
+  ]);
+  if (i.error || r.error) { return loginScreen("Could not load data — try signing in again."); }
+  items = i.data.map(x => ({ ...x.data, ...x }));
+  roles = r.data.map(x => x.data);
+  render();
+}
+
+function render() {
+  const counts = Object.fromEntries(TABS.map(t => [t, items.filter(i => i.status === t).length]));
+  app.innerHTML = `<header><h1>Job Agent</h1>
+      <button id="vo">Outreach</button><button id="vr">Roles</button>
+      <button id="rf">Refresh</button><button id="so">Sign out</button></header><main id="m"></main>`;
+  const g = (id) => document.getElementById(id);
+  g("vo").onclick = () => { view = "outreach"; render(); }; g("vr").onclick = () => { view = "roles"; render(); };
+  g("rf").onclick = load; g("so").onclick = async () => { await sb.auth.signOut(); loginScreen(); };
+  const m = document.getElementById("m");
+  if (view === "roles") return renderRoles(m);
+  m.innerHTML = `<nav>${TABS.map(t => `<button class="${t===tab?"on":""}" data-t="${t}">${t} (${counts[t]})</button>`).join("")}</nav>
+    <p class="note">Approved emails are sent automatically on weekdays at about 10:30 and 15:30 UK time (max per day applies). Sent emails can't be edited.</p>
+    <div id="list"></div>`;
+  m.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  const list = document.getElementById("list");
+  const shown = items.filter(i => i.status === tab);
+  if (!shown.length) list.innerHTML = "<p>Nothing here.</p>";
+  shown.sort((a, b) => (b.score || 0) - (a.score || 0)).forEach(i => list.appendChild(card(i)));
+}
+
+function card(i) {
+  const editable = i.status === "pending" || i.status === "approved";
+  const conf = i.email_confidence === "guessed" ? `<span class="tag warn">guessed address — bounce risk</span>` : `<span class="tag ok">${esc(i.email_confidence)}</span>`;
+  const el = $(`<div class="card">
+    <div class="meta"><b>${esc(i.company)}</b> — ${esc(i.role_title)} ${i.score ? `(${i.score}/10)` : ""} · ${esc(i.kind)}
+      ${i.role_url ? ` · <a href="${esc(i.role_url)}" target="_blank" rel="noopener">posting</a>` : ""}</div>
+    <div class="meta">To: <b>${esc(i.to_name)}</b> ${esc(i.to_title)} (${esc(i.to_type)}) ${conf}</div>
+    <input class="to" value="${esc(i.to_email)}" ${editable ? "" : "disabled"}>
+    <input class="sub" value="${esc(i.subject)}" ${editable ? "" : "disabled"}>
+    <textarea class="body" ${editable ? "" : "disabled"}>${esc(i.body)}</textarea>
+    ${i.reply_subject ? `<div class="meta">Reply: ${esc(i.reply_from)} — ${esc(i.reply_subject)}</div>` : ""}
+    ${i.error ? `<div class="meta" style="color:var(--bad)">Last send error: ${esc(i.error)}</div>` : ""}
+    ${i.sent_at ? `<div class="meta">Sent ${esc(new Date(i.sent_at).toLocaleString())}</div>` : ""}
+    <div class="row"></div></div>`);
+  const row = el.querySelector(".row");
+  const add = (label, cls, status) => {
+    const b = $(`<button class="btn ${cls}">${label}</button>`);
+    b.onclick = async () => {
+      b.disabled = true;
+      const patch = { to_email: el.querySelector(".to").value.trim(), subject: el.querySelector(".sub").value.trim(),
+                      body: el.querySelector(".body").value };
+      if (status) patch.status = status;
+      const { error } = await sb.from("outreach_items").update(patch).eq("id", i.id);
+      if (error) { alert("Save failed: " + error.message); b.disabled = false; return; }
+      load();
+    };
+    row.appendChild(b);
+  };
+  if (i.status === "pending") add("Approve", "approve", "approved");
+  if (i.status === "approved") add("Back to pending", "", "pending");
+  if (editable) { add("Save edits", "", null); add("Skip", "skip", "skipped"); }
+  return el;
+}
+
+function renderRoles(m) {
+  m.innerHTML = `<nav><button class="on">Roles</button></nav>
+    <p class="note">Min score: <input id="ms" type="number" min="1" max="10" value="${minScore}" style="width:70px;display:inline"></p>
+    <div class="card"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Location</th></tr></thead><tbody id="tb"></tbody></table></div>`;
+  const draw = () => {
+    const rows = roles.filter(r => (r.score || 0) >= minScore).sort((a, b) => (b.score || 0) - (a.score || 0));
+    document.getElementById("tb").innerHTML = rows.map(r => `<tr><td class="score">${r.score}</td><td>${esc(r.company)}</td>
+      <td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></td><td>${esc((r.location || "").slice(0, 40))}</td></tr>`).join("");
+  };
+  document.getElementById("ms").onchange = (e) => { minScore = +e.target.value || 1; draw(); };
+  draw();
+}
+
+boot();
+</script>
+</body>
+</html>
