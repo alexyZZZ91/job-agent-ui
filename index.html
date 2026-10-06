@@ -162,6 +162,7 @@ function renderRoles(m) {
       const { error } = await sb.from("applications").insert({ role_id: r.id, company: r.company, title: r.title, url: r.url,
         score: r.score, status: "applied", applied_at: new Date().toISOString() });
       if (error) { alert("Couldn't save: " + error.message); b.disabled = false; return; }
+      window._pollN = 0; view = "apps";      // jump to the Applications tab to watch the pack build
       load();
     });
   };
@@ -171,7 +172,7 @@ function renderRoles(m) {
 
 function renderApps(m) {
   m.innerHTML = `<nav><button class="on">Applications (${apps.length})</button></nav>
-    <p class="note">Outreach packs are built within the hour of pressing Applied. Drafted emails appear on the <b>Outreach</b> tab (held for 24h after you applied) for you to approve.</p>
+    <p class="note">Outreach packs usually build within a minute or two of pressing Applied (at worst within the hour); this page refreshes itself while one is building. Drafted emails appear on the <b>Outreach</b> tab (held for 24h after you applied) for you to approve.</p>
     <div class="card"><b>Applied somewhere that isn't in the Roles list?</b>
       <div class="note">Paste the link to the job posting. I'll read it, score it, find the hiring manager / recruiter and draft the follow-up (picked up within the hour).</div>
       <input id="lk" placeholder="https://... link to the job posting" autocomplete="off">
@@ -180,6 +181,10 @@ function renderApps(m) {
       <div class="row"><button class="btn approve" id="lgo">I applied - find contacts</button></div></div>
     <div id="alist"></div>`;
   document.getElementById("lgo").onclick = addLinkApplication;
+  // while a pack is still building, re-check every 15s (up to ~3 minutes) so it appears without a manual refresh
+  clearTimeout(window._poll);
+  const building = apps.some(a => !(a.pack && (a.pack.generated_at || a.pack.link_error)));
+  if (building && (window._pollN = (window._pollN || 0) + 1) <= 12) window._poll = setTimeout(load, 15000);
   const list = document.getElementById("alist");
   if (!apps.length) { list.innerHTML = "<p>No applications yet. Apply for a role, then press <b>Applied</b> on the Roles tab, or paste a link above.</p>"; return; }
   apps.forEach(a => list.appendChild(appCard(a)));
@@ -202,6 +207,7 @@ async function addLinkApplication() {
     title: document.getElementById("lt").value.trim() || "(reading link...)",
   });
   if (error) { alert("Couldn't save: " + error.message); btn.disabled = false; return; }
+  window._pollN = 0; view = "apps";
   load();
 }
 
@@ -218,6 +224,7 @@ function appCard(a) {
     : p.generated_at ? `
       <div class="meta" style="margin-top:10px"><b>Outreach pack</b> (built ${esc(new Date(p.generated_at).toLocaleString())})</div>
       ${contacts ? `<ul>${contacts}</ul>` : ""}
+      ${p.score_note ? `<div class="note">${esc(p.score_note)}</div>` : ""}
       ${p.hunter_note ? `<div class="note">${esc(p.hunter_note)}</div>` : ""}
       ${li.note ? `<div class="meta">LinkedIn connection note <button class="btn cp" data-t="note">Copy</button></div><div class="card" style="margin:4px 0">${esc(li.note)}</div>` : ""}
       ${li.dm ? `<div class="meta">LinkedIn follow-up message <button class="btn cp" data-t="dm">Copy</button></div><div class="card" style="margin:4px 0;white-space:pre-wrap">${esc(li.dm)}</div>` : ""}
@@ -226,6 +233,7 @@ function appCard(a) {
     : `<div class="note" style="margin-top:10px">Outreach pack not built yet — it builds within the hour (or at the next scheduled run).</div>`;
   const el = $(`<div class="card">
     <div class="meta"><b>${esc(a.company)}</b> — <a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.title)}</a> ${a.score ? `(${a.score}/10)` : ""}
+      ${a.score == null && p.generated_at ? `<span class="tag warn">not scored</span>` : ""}
       · applied ${esc(new Date(a.applied_at).toLocaleDateString())}</div>
     ${isLink && (p.link_error || reading) ? `<div class="row"><input class="ca" style="flex:1;min-width:150px" placeholder="Company" value="${reading ? "" : esc(a.company)}">
       <input class="ti" style="flex:1;min-width:150px" placeholder="Role title" value="${reading ? "" : esc(a.title)}"></div>` : ""}
