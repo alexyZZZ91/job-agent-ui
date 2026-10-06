@@ -23,6 +23,8 @@
   .meta{font-size:13px;color:var(--muted);margin-bottom:6px;overflow-wrap:anywhere}
   .tag{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;margin-left:4px}
   .tag.warn{background:var(--warnbg);color:var(--warn)} .tag.ok{background:var(--chip);color:var(--ok)}
+  select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:inherit}
+  ul{margin:6px 0;padding-left:20px}
   input,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;margin:3px 0 8px}
   textarea{min-height:200px}
   .row{display:flex;gap:8px;flex-wrap:wrap}
@@ -48,7 +50,8 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = (h) => { const d = document.createElement("div"); d.innerHTML = h; return d.firstElementChild; };
 const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const app = document.getElementById("app");
-let view = "outreach", tab = "pending", items = [], roles = [], minScore = 6;
+let view = "outreach", tab = "pending", items = [], roles = [], apps = [], minScore = 6;
+const APP_STATUSES = ["applied","screen","interview","offer","rejected","withdrawn"];
 const TABS = ["pending","approved","sent","replied","autoreply","bounced","skipped"];
 
 async function boot() {
@@ -72,26 +75,30 @@ function loginScreen(msg = "") {
 }
 
 async function load() {
-  const [i, r] = await Promise.all([
+  const [i, r, a] = await Promise.all([
     sb.from("outreach_items").select("*").order("updated_at", { ascending: false }),
     sb.from("roles").select("data"),
+    sb.from("applications").select("*").order("applied_at", { ascending: false }),
   ]);
   if (i.error || r.error) { return loginScreen("Could not load data — try signing in again."); }
   items = i.data.map(x => ({ ...x.data, ...x }));
   roles = r.data.map(x => x.data);
+  apps = a.error ? [] : a.data;          // table may not exist until applications.sql has been run
   render();
 }
 
 function render() {
   const counts = Object.fromEntries(TABS.map(t => [t, items.filter(i => i.status === t).length]));
   app.innerHTML = `<header><h1>Job Agent</h1>
-      <button id="vo">Outreach</button><button id="vr">Roles</button>
+      <button id="vo">Outreach</button><button id="va">Applications (${apps.length})</button><button id="vr">Roles</button>
       <button id="rf">Refresh</button><button id="so">Sign out</button></header><main id="m"></main>`;
   const g = (id) => document.getElementById(id);
   g("vo").onclick = () => { view = "outreach"; render(); }; g("vr").onclick = () => { view = "roles"; render(); };
+  g("va").onclick = () => { view = "apps"; render(); };
   g("rf").onclick = load; g("so").onclick = async () => { await sb.auth.signOut(); loginScreen(); };
   const m = document.getElementById("m");
   if (view === "roles") return renderRoles(m);
+  if (view === "apps") return renderApps(m);
   m.innerHTML = `<nav>${TABS.map(t => `<button class="${t===tab?"on":""}" data-t="${t}">${t} (${counts[t]})</button>`).join("")}</nav>
     <p class="note">Approved emails are sent automatically on weekdays at about 10:30 and 15:30 UK time (max per day applies). Sent emails can't be edited.</p>
     <div id="list"></div>`;
@@ -107,7 +114,8 @@ function card(i) {
   const conf = i.email_confidence === "guessed" ? `<span class="tag warn">guessed address — bounce risk</span>` : `<span class="tag ok">${esc(i.email_confidence)}</span>`;
   const el = $(`<div class="card">
     <div class="meta"><b>${esc(i.company)}</b> — ${esc(i.role_title)} ${i.score ? `(${i.score}/10)` : ""} · ${esc(i.kind)}
-      ${i.role_url ? ` · <a href="${esc(i.role_url)}" target="_blank" rel="noopener">posting</a>` : ""}</div>
+      ${i.role_url ? ` · <a href="${esc(i.role_url)}" target="_blank" rel="noopener">posting</a>` : ""}
+      ${i.not_before && new Date(i.not_before) > new Date() ? ` · <b>holds until ${esc(new Date(i.not_before).toLocaleString())}</b>` : ""}</div>
     <div class="meta">To: <b>${esc(i.to_name)}</b> ${esc(i.to_title)} (${esc(i.to_type)}) ${conf}</div>
     <input class="to" value="${esc(i.to_email)}" ${editable ? "" : "disabled"}>
     <input class="sub" value="${esc(i.subject)}" ${editable ? "" : "disabled"}>
@@ -139,14 +147,106 @@ function card(i) {
 function renderRoles(m) {
   m.innerHTML = `<nav><button class="on">Roles</button></nav>
     <p class="note">Min score: <input id="ms" type="number" min="1" max="10" value="${minScore}" style="width:70px;display:inline"></p>
-    <div class="card"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Location</th></tr></thead><tbody id="tb"></tbody></table></div>`;
+    <p class="note">Apply on the company site or LinkedIn first, then press <b>Applied</b> — I'll find the right people and draft the follow-up.</p>
+    <div class="card"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Location</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>`;
+  const done = new Map(apps.map(a => [a.role_id, a]));
   const draw = () => {
     const rows = roles.filter(r => (r.score || 0) >= minScore).sort((a, b) => (b.score || 0) - (a.score || 0));
     document.getElementById("tb").innerHTML = rows.map(r => `<tr><td class="score">${r.score}</td><td>${esc(r.company)}</td>
-      <td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></td><td>${esc((r.location || "").slice(0, 40))}</td></tr>`).join("");
+      <td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></td><td>${esc((r.location || "").slice(0, 40))}</td>
+      <td>${done.has(r.id) ? `<span class="tag ok">Applied ✓</span>` : `<button class="btn approve applyBtn" data-id="${esc(r.id)}">Applied</button>`}</td></tr>`).join("");
+    document.querySelectorAll(".applyBtn").forEach(b => b.onclick = async () => {
+      const r = roles.find(x => x.id === b.dataset.id);
+      if (!confirm(`Mark "${r.title}" at ${r.company} as applied?\n\nI'll build an outreach pack for it (contacts, drafted emails for your review, LinkedIn note).`)) return;
+      b.disabled = true;
+      const { error } = await sb.from("applications").insert({ role_id: r.id, company: r.company, title: r.title, url: r.url,
+        score: r.score, status: "applied", applied_at: new Date().toISOString() });
+      if (error) { alert("Couldn't save: " + error.message); b.disabled = false; return; }
+      load();
+    });
   };
   document.getElementById("ms").onchange = (e) => { minScore = +e.target.value || 1; draw(); };
   draw();
+}
+
+function renderApps(m) {
+  m.innerHTML = `<nav><button class="on">Applications (${apps.length})</button></nav>
+    <p class="note">Outreach packs are built within the hour of pressing Applied. Drafted emails appear on the <b>Outreach</b> tab (held for 24h after you applied) for you to approve.</p>
+    <div class="card"><b>Applied somewhere that isn't in the Roles list?</b>
+      <div class="note">Paste the link to the job posting. I'll read it, score it, find the hiring manager / recruiter and draft the follow-up (picked up within the hour).</div>
+      <input id="lk" placeholder="https://... link to the job posting" autocomplete="off">
+      <div class="row"><input id="lc" style="flex:1;min-width:160px" placeholder="Company (optional - helps if the link can't be read)">
+      <input id="lt" style="flex:1;min-width:160px" placeholder="Role title (optional)"></div>
+      <div class="row"><button class="btn approve" id="lgo">I applied - find contacts</button></div></div>
+    <div id="alist"></div>`;
+  document.getElementById("lgo").onclick = addLinkApplication;
+  const list = document.getElementById("alist");
+  if (!apps.length) { list.innerHTML = "<p>No applications yet. Apply for a role, then press <b>Applied</b> on the Roles tab, or paste a link above.</p>"; return; }
+  apps.forEach(a => list.appendChild(appCard(a)));
+}
+
+async function sha10(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 10);
+}
+
+async function addLinkApplication() {
+  const url = document.getElementById("lk").value.trim();
+  if (!/^https?:\/\/\S+$/i.test(url)) { alert("Please paste a full link starting with http:// or https://"); return; }
+  const id = "link::" + await sha10(url);
+  if (apps.some(a => a.role_id === id)) { alert("You've already added that link."); return; }
+  const btn = document.getElementById("lgo"); btn.disabled = true;
+  const { error } = await sb.from("applications").insert({
+    role_id: id, url, status: "applied", applied_at: new Date().toISOString(),
+    company: document.getElementById("lc").value.trim() || "(reading link...)",
+    title: document.getElementById("lt").value.trim() || "(reading link...)",
+  });
+  if (error) { alert("Couldn't save: " + error.message); btn.disabled = false; return; }
+  load();
+}
+
+function appCard(a) {
+  const p = a.pack || {};
+  const contacts = (p.contacts || []).map(c => `<li><b>${esc(c.name)}</b>, ${esc(c.title)} — ${esc(c.email)}
+      <span class="tag ${c.confidence === "guessed" ? "warn" : "ok"}">${esc(c.confidence)}</span> ${esc(c.type)}
+      ${c.item_id ? "· email drafted (see Outreach)" : `· ${esc(c.note || "")}`}</li>`).join("");
+  const li = p.linkedin || {};
+  const links = (li.search_links || []).map(l => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a></li>`).join("");
+  const isLink = a.role_id.startsWith("link::"), reading = (a.company || "").startsWith("(reading");
+  const pack = p.link_error ? `<div class="note" style="margin-top:10px;color:var(--bad)">${esc(p.link_error)}</div>`
+    : reading && !p.generated_at ? `<div class="note" style="margin-top:10px">Reading the link and scoring the role - this happens within the hour.</div>`
+    : p.generated_at ? `
+      <div class="meta" style="margin-top:10px"><b>Outreach pack</b> (built ${esc(new Date(p.generated_at).toLocaleString())})</div>
+      ${contacts ? `<ul>${contacts}</ul>` : ""}
+      ${p.hunter_note ? `<div class="note">${esc(p.hunter_note)}</div>` : ""}
+      ${li.note ? `<div class="meta">LinkedIn connection note <button class="btn cp" data-t="note">Copy</button></div><div class="card" style="margin:4px 0">${esc(li.note)}</div>` : ""}
+      ${li.dm ? `<div class="meta">LinkedIn follow-up message <button class="btn cp" data-t="dm">Copy</button></div><div class="card" style="margin:4px 0;white-space:pre-wrap">${esc(li.dm)}</div>` : ""}
+      ${links ? `<div class="meta">Find people on LinkedIn:</div><ul>${links}</ul>` : ""}
+      ${p.manual_note ? `<div class="note">${esc(p.manual_note)}</div>` : ""}`
+    : `<div class="note" style="margin-top:10px">Outreach pack not built yet — it builds within the hour (or at the next scheduled run).</div>`;
+  const el = $(`<div class="card">
+    <div class="meta"><b>${esc(a.company)}</b> — <a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.title)}</a> ${a.score ? `(${a.score}/10)` : ""}
+      · applied ${esc(new Date(a.applied_at).toLocaleDateString())}</div>
+    ${isLink && (p.link_error || reading) ? `<div class="row"><input class="ca" style="flex:1;min-width:150px" placeholder="Company" value="${reading ? "" : esc(a.company)}">
+      <input class="ti" style="flex:1;min-width:150px" placeholder="Role title" value="${reading ? "" : esc(a.title)}"></div>` : ""}
+    <div class="row" style="align-items:center"><select class="st">${APP_STATUSES.map(s => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+    <div class="meta" style="margin-top:8px">Notes</div><textarea class="nt" style="min-height:60px">${esc(a.notes)}</textarea>
+    <div class="meta">Contact I found (paste a name + title, a LinkedIn URL, or an email — I'll draft a note to them)</div>
+    <input class="mc" value="${esc(a.manual_contact)}" placeholder="e.g. Jane Smith, VP Infrastructure — linkedin.com/in/janesmith">
+    <div class="row"><button class="btn save">Save</button></div>${pack}</div>`);
+  el.querySelector(".save").onclick = async (ev) => {
+    ev.target.disabled = true;
+    const patch = { status: el.querySelector(".st").value, notes: el.querySelector(".nt").value,
+                    manual_contact: el.querySelector(".mc").value.trim() };
+    const ca = el.querySelector(".ca"), ti = el.querySelector(".ti");
+    if (ca && ca.value.trim()) patch.company = ca.value.trim();
+    if (ti && ti.value.trim()) patch.title = ti.value.trim();
+    const { error } = await sb.from("applications").update(patch).eq("role_id", a.role_id);
+    if (error) { alert("Save failed: " + error.message); ev.target.disabled = false; return; }
+    load();
+  };
+  el.querySelectorAll(".cp").forEach(b => b.onclick = () => { navigator.clipboard.writeText(li[b.dataset.t] || ""); b.textContent = "Copied"; });
+  return el;
 }
 
 boot();
