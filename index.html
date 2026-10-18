@@ -50,7 +50,15 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = (h) => { const d = document.createElement("div"); d.innerHTML = h; return d.firstElementChild; };
 const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const app = document.getElementById("app");
-let view = "outreach", tab = "pending", items = [], roles = [], apps = [], minScore = 6;
+let view = "outreach", tab = "pending", items = [], roles = [], apps = [], minScore = 6, hideNoSponsor = true;
+// Visa badge from the scorer: offered / not_mentioned (assumed available, per Alex's rule) / not_offered
+function visaBadge(r) {
+  const s = (r.score_reasoning || {}).sponsorship, ev = esc((r.score_reasoning || {}).auth_evidence || "");
+  if (s === "offered") return `<span class="tag ok" title="${ev}">sponsors</span>`;
+  if (s === "not_offered") return `<span class="tag warn" title="${ev}">no sponsorship</span>`;
+  if (s === "not_mentioned") return `<span class="tag" title="Not mentioned in the posting - assumed available">assumed</span>`;
+  return `<span class="tag" title="Scored before the sponsorship rules were added">-</span>`;
+}
 const APP_STATUSES = ["applied","screen","interview","offer","rejected","withdrawn"];
 const TABS = ["pending","approved","sent","replied","autoreply","bounced","skipped"];
 
@@ -146,14 +154,18 @@ function card(i) {
 
 function renderRoles(m) {
   m.innerHTML = `<nav><button class="on">Roles</button></nav>
-    <p class="note">Min score: <input id="ms" type="number" min="1" max="10" value="${minScore}" style="width:70px;display:inline"></p>
+    <p class="note">Min score: <input id="ms" type="number" min="1" max="10" value="${minScore}" style="width:70px;display:inline">
+      &nbsp; <label><input id="hns" type="checkbox" style="width:auto;display:inline" ${hideNoSponsor ? "checked" : ""}> hide roles that say they won't sponsor a visa</label></p>
     <p class="note">Apply on the company site or LinkedIn first, then press <b>Applied</b> — I'll find the right people and draft the follow-up.</p>
-    <div class="card"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Location</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>`;
+    <div class="card"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Location</th><th>Visa</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>`;
   const done = new Map(apps.map(a => [a.role_id, a]));
   const draw = () => {
-    const rows = roles.filter(r => (r.score || 0) >= minScore).sort((a, b) => (b.score || 0) - (a.score || 0));
+    const rows = roles.filter(r => (r.score || 0) >= minScore)
+      .filter(r => !(hideNoSponsor && (r.score_reasoning || {}).sponsorship === "not_offered"))
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
     document.getElementById("tb").innerHTML = rows.map(r => `<tr><td class="score">${r.score}</td><td>${esc(r.company)}</td>
       <td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></td><td>${esc((r.location || "").slice(0, 40))}</td>
+      <td>${visaBadge(r)}</td>
       <td>${done.has(r.id) ? `<span class="tag ok">Applied ✓</span>` : `<button class="btn approve applyBtn" data-id="${esc(r.id)}">Applied</button>`}</td></tr>`).join("");
     document.querySelectorAll(".applyBtn").forEach(b => b.onclick = async () => {
       const r = roles.find(x => x.id === b.dataset.id);
@@ -167,6 +179,7 @@ function renderRoles(m) {
     });
   };
   document.getElementById("ms").onchange = (e) => { minScore = +e.target.value || 1; draw(); };
+  document.getElementById("hns").onchange = (e) => { hideNoSponsor = e.target.checked; draw(); };
   draw();
 }
 
