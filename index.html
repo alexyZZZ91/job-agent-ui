@@ -51,7 +51,7 @@ const $ = (h) => { const d = document.createElement("div"); d.innerHTML = h; ret
 const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const app = document.getElementById("app");
 let view = "outreach", tab = "pending", items = [], roles = [], apps = [], minScore = 6, hideNoSponsor = true;
-let h1b = { roles: [] }, h1bYesOnly = false, h1bQuery = "", h1bMinFit = 0, h1bShowClosed = false;
+let h1b = { roles: [] }, h1bYesOnly = false, h1bQuery = "", h1bMinFit = 0, h1bShowClosed = false, h1bRecord = true;
 // Visa badge from the scorer: offered / not_mentioned (assumed available, per Alex's rule) / not_offered
 function visaBadge(r) {
   const s = (r.score_reasoning || {}).sponsorship, ev = esc((r.score_reasoning || {}).auth_evidence || "");
@@ -193,12 +193,13 @@ function renderH1b(m) {
   const updated = h1b.updated ? new Date(h1b.updated).toLocaleString() : "never";
   m.innerHTML = `<nav><button class="on">US roles that mention H-1B / visa sponsorship</button></nav>
     <p class="note">Every US role on ${h1b.boards_scanned || 0} job boards (${(h1b.jobs_seen || 0).toLocaleString()} postings read, last scan ${esc(updated)})
-      whose posting explicitly mentions H-1B or visa sponsorship, with a loose leadership + infrastructure title match.
-      Roles that say they <b>won't</b> sponsor are excluded. <b>sponsors</b> = the posting says yes; <b>check</b> = it mentions
-      sponsorship without a clear yes/no - read the quoted line. Fit is a rough sort (seniority + domain + evidence), not a model score.</p>
+      with a loose leadership + infrastructure title match. Roles that say they <b>won't</b> sponsor are excluded.
+      <b>sponsors</b> = the posting says it sponsors; <b>check</b> = it mentions sponsorship without a clear yes/no (read the quote);
+      <b>proven sponsor</b> = the posting is silent but the employer had 50+ H-1B approvals (USCIS). Fit is a rough sort, not a model score.</p>
     <div class="row" style="align-items:center">
       <input id="hq" placeholder="Filter by company, title or location" style="flex:2;min-width:200px" value="${esc(h1bQuery)}">
       <label class="note"><input id="hy" type="checkbox" style="width:auto;display:inline" ${h1bYesOnly ? "checked" : ""}> explicit "sponsors" only</label>
+      <label class="note"><input id="hr" type="checkbox" style="width:auto;display:inline" ${h1bRecord ? "checked" : ""}> include proven sponsors (posting silent)</label>
       <label class="note">min fit <input id="hf" type="number" min="0" max="9" value="${h1bMinFit}" style="width:60px;display:inline"></label>
       <label class="note"><input id="hc" type="checkbox" style="width:auto;display:inline" ${h1bShowClosed ? "checked" : ""}> show recently closed</label>
     </div>
@@ -208,6 +209,7 @@ function renderH1b(m) {
   const draw = () => {
     const q = h1bQuery.toLowerCase();
     const rows = (h1b.roles || []).filter(r => (h1bShowClosed || !r.closed_since) && (!h1bYesOnly || r.sponsorship === "yes")
+      && (h1bRecord || r.sponsorship !== "record")
       && r.fit >= h1bMinFit && (!q || `${r.company} ${r.title} ${r.location}`.toLowerCase().includes(q)));
     document.getElementById("htb").innerHTML = rows.length ? rows.map((r, n) => `<tr>
       <td class="score">${r.fit}</td><td>${esc(r.company)}</td>
@@ -215,7 +217,8 @@ function renderH1b(m) {
         <div class="note" style="margin:2px 0 0">"${esc((r.evidence || "").slice(0, 220))}"</div></td>
       <td>${esc((r.location || "").slice(0, 45))}${r.remote_unclear ? ' <span class="tag warn">country?</span>' : ""}
         ${r.closed_since ? ' <span class="tag warn">gone from board</span>' : ""}</td>
-      <td>${r.sponsorship === "yes" ? '<span class="tag ok">sponsors</span>' : '<span class="tag warn">check</span>'}</td>
+      <td>${r.sponsorship === "yes" ? '<span class="tag ok">sponsors</span>' : r.sponsorship === "record"
+            ? '<span class="tag">proven sponsor</span>' : '<span class="tag warn">check</span>'}</td>
       <td>${r.h1b_total ? r.h1b_total.toLocaleString() : "-"}</td>
       <td>${applied.has(r.url) ? '<span class="tag ok">Applied ✓</span>' : `<button class="btn approve happ" data-n="${n}">Applied</button>`}</td></tr>`).join("")
       : `<tr><td colspan="7">No roles match these filters${(h1b.roles || []).length ? "" : " - the first scan hasn't run yet"}.</td></tr>`;
@@ -231,6 +234,7 @@ function renderH1b(m) {
   };
   document.getElementById("hq").oninput = (e) => { h1bQuery = e.target.value; draw(); };
   document.getElementById("hy").onchange = (e) => { h1bYesOnly = e.target.checked; draw(); };
+  document.getElementById("hr").onchange = (e) => { h1bRecord = e.target.checked; draw(); };
   document.getElementById("hf").onchange = (e) => { h1bMinFit = +e.target.value || 0; draw(); };
   document.getElementById("hc").onchange = (e) => { h1bShowClosed = e.target.checked; draw(); };
   draw();
