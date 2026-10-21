@@ -51,6 +51,7 @@ const $ = (h) => { const d = document.createElement("div"); d.innerHTML = h; ret
 const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const app = document.getElementById("app");
 let view = "outreach", tab = "pending", items = [], roles = [], apps = [], minScore = 6, hideNoSponsor = true;
+let h1b = { roles: [] }, h1bYesOnly = false, h1bQuery = "", h1bMinFit = 0, h1bShowClosed = false;
 // Visa badge from the scorer: offered / not_mentioned (assumed available, per Alex's rule) / not_offered
 function visaBadge(r) {
   const s = (r.score_reasoning || {}).sponsorship, ev = esc((r.score_reasoning || {}).auth_evidence || "");
@@ -83,11 +84,13 @@ function loginScreen(msg = "") {
 }
 
 async function load() {
-  const [i, r, a] = await Promise.all([
+  const [i, r, a, h] = await Promise.all([
     sb.from("outreach_items").select("*").order("updated_at", { ascending: false }),
     sb.from("roles").select("data"),
     sb.from("applications").select("*").order("applied_at", { ascending: false }),
+    sb.from("kv").select("data").eq("key", "h1b_scan").maybeSingle(),
   ]);
+  h1b = (h && !h.error && h.data && h.data.data) || { roles: [] };
   if (i.error || r.error) { return loginScreen("Could not load data — try signing in again."); }
   items = i.data.map(x => ({ ...x.data, ...x }));
   roles = r.data.map(x => x.data);
@@ -99,14 +102,17 @@ function render() {
   const counts = Object.fromEntries(TABS.map(t => [t, items.filter(i => i.status === t).length]));
   app.innerHTML = `<header><h1>Job Agent</h1>
       <button id="vo">Outreach</button><button id="va">Applications (${apps.length})</button><button id="vr">Roles</button>
+      <button id="vh">US + H-1B (${(h1b.roles || []).filter(x => !x.closed_since).length})</button>
       <button id="rf">Refresh</button><button id="so">Sign out</button></header><main id="m"></main>`;
   const g = (id) => document.getElementById(id);
   g("vo").onclick = () => { view = "outreach"; render(); }; g("vr").onclick = () => { view = "roles"; render(); };
   g("va").onclick = () => { view = "apps"; render(); };
+  g("vh").onclick = () => { view = "h1b"; render(); };
   g("rf").onclick = load; g("so").onclick = async () => { await sb.auth.signOut(); loginScreen(); };
   const m = document.getElementById("m");
   if (view === "roles") return renderRoles(m);
   if (view === "apps") return renderApps(m);
+  if (view === "h1b") return renderH1b(m);
   m.innerHTML = `<nav>${TABS.map(t => `<button class="${t===tab?"on":""}" data-t="${t}">${t} (${counts[t]})</button>`).join("")}</nav>
     <p class="note">Approved emails are sent automatically on weekdays at about 10:30 and 15:30 UK time (max per day applies). Sent emails can't be edited.</p>
     <div id="list"></div>`;
@@ -180,6 +186,53 @@ function renderRoles(m) {
   };
   document.getElementById("ms").onchange = (e) => { minScore = +e.target.value || 1; draw(); };
   document.getElementById("hns").onchange = (e) => { hideNoSponsor = e.target.checked; draw(); };
+  draw();
+}
+
+function renderH1b(m) {
+  const updated = h1b.updated ? new Date(h1b.updated).toLocaleString() : "never";
+  m.innerHTML = `<nav><button class="on">US roles that mention H-1B / visa sponsorship</button></nav>
+    <p class="note">Every US role on ${h1b.boards_scanned || 0} job boards (${(h1b.jobs_seen || 0).toLocaleString()} postings read, last scan ${esc(updated)})
+      whose posting explicitly mentions H-1B or visa sponsorship, with a loose leadership + infrastructure title match.
+      Roles that say they <b>won't</b> sponsor are excluded. <b>sponsors</b> = the posting says yes; <b>check</b> = it mentions
+      sponsorship without a clear yes/no - read the quoted line. Fit is a rough sort (seniority + domain + evidence), not a model score.</p>
+    <div class="row" style="align-items:center">
+      <input id="hq" placeholder="Filter by company, title or location" style="flex:2;min-width:200px" value="${esc(h1bQuery)}">
+      <label class="note"><input id="hy" type="checkbox" style="width:auto;display:inline" ${h1bYesOnly ? "checked" : ""}> explicit "sponsors" only</label>
+      <label class="note">min fit <input id="hf" type="number" min="0" max="9" value="${h1bMinFit}" style="width:60px;display:inline"></label>
+      <label class="note"><input id="hc" type="checkbox" style="width:auto;display:inline" ${h1bShowClosed ? "checked" : ""}> show recently closed</label>
+    </div>
+    <div class="card"><table><thead><tr><th>Fit</th><th>Company</th><th>Role</th><th>Location</th><th>Sponsorship</th><th>H-1B record</th><th></th></tr></thead>
+      <tbody id="htb"></tbody></table></div>`;
+  const applied = new Set(apps.map(a => a.url));
+  const draw = () => {
+    const q = h1bQuery.toLowerCase();
+    const rows = (h1b.roles || []).filter(r => (h1bShowClosed || !r.closed_since) && (!h1bYesOnly || r.sponsorship === "yes")
+      && r.fit >= h1bMinFit && (!q || `${r.company} ${r.title} ${r.location}`.toLowerCase().includes(q)));
+    document.getElementById("htb").innerHTML = rows.length ? rows.map((r, n) => `<tr>
+      <td class="score">${r.fit}</td><td>${esc(r.company)}</td>
+      <td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>
+        <div class="note" style="margin:2px 0 0">"${esc((r.evidence || "").slice(0, 220))}"</div></td>
+      <td>${esc((r.location || "").slice(0, 45))}${r.remote_unclear ? ' <span class="tag warn">country?</span>' : ""}
+        ${r.closed_since ? ' <span class="tag warn">gone from board</span>' : ""}</td>
+      <td>${r.sponsorship === "yes" ? '<span class="tag ok">sponsors</span>' : '<span class="tag warn">check</span>'}</td>
+      <td>${r.h1b_total ? r.h1b_total.toLocaleString() : "-"}</td>
+      <td>${applied.has(r.url) ? '<span class="tag ok">Applied ✓</span>' : `<button class="btn approve happ" data-n="${n}">Applied</button>`}</td></tr>`).join("")
+      : `<tr><td colspan="7">No roles match these filters${(h1b.roles || []).length ? "" : " - the first scan hasn't run yet"}.</td></tr>`;
+    document.querySelectorAll(".happ").forEach(b => b.onclick = async () => {
+      const r = rows[+b.dataset.n];
+      if (!confirm(`Mark "${r.title}" at ${r.company} as applied?\n\nI'll read the posting, score it and build an outreach pack.`)) return;
+      b.disabled = true;
+      const { error } = await sb.from("applications").insert({ role_id: "link::" + await sha10(r.url), url: r.url,
+        company: r.company, title: r.title, status: "applied", applied_at: new Date().toISOString() });
+      if (error) { alert("Couldn't save: " + error.message); b.disabled = false; return; }
+      window._pollN = 0; view = "apps"; load();
+    });
+  };
+  document.getElementById("hq").oninput = (e) => { h1bQuery = e.target.value; draw(); };
+  document.getElementById("hy").onchange = (e) => { h1bYesOnly = e.target.checked; draw(); };
+  document.getElementById("hf").onchange = (e) => { h1bMinFit = +e.target.value || 0; draw(); };
+  document.getElementById("hc").onchange = (e) => { h1bShowClosed = e.target.checked; draw(); };
   draw();
 }
 
